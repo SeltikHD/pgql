@@ -11,7 +11,7 @@ pgql is a TypeScript library that provides automatic bridging between SQL and Gr
 
 ## Installation
 
-NPM:
+NPM
 
 ```bash
 npm install pgql
@@ -85,7 +85,7 @@ export async function createSchema() {
 
 ## License
 
-This project is licensed under the ISC License - see the [LICENSE]('https://opensource.org/license/isc-license-txt/') file for details.
+This project is licensed under the ISC License - see the [LICENSE](https://opensource.org/license/isc-license-txt/) file for details.
 
 ## Contributing
 
@@ -93,4 +93,4 @@ Contributions are welcome! Fork the repository, make your changes, and submit a 
 
 ## Support
 
-If you have any questions, issues, or feature requests, please [create an issue]('https://github.com/SeltikHD/pgql/issues') on the repository.
+If you have any questions, issues, or feature requests, please [create an issue](https://github.com/SeltikHD/pgql/issues) on the repository.
