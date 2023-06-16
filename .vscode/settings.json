@@ -1,0 +1,39 @@
+{
+    "editor.tabSize": 4,
+    "editor.fontLigatures": true,
+    "editor.lineHeight": 25,
+    "better-comments.highlightPlainText": true,
+    "reactSnippets.settings.prettierEnabled": true,
+    "eslint.format.enable": true,
+    "eslint.lintTask.enable": true,
+    "eslint.packageManager": "yarn",
+    "html.format.endWithNewline": true,
+    "markdown.preview.breaks": true,
+    "prettier.configPath": ".prettierrc",
+    "prettier.jsxSingleQuote": true,
+    "prettier.singleQuote": true,
+    "prettier.useTabs": true,
+    "tslint.packageManager": "yarn",
+    "editor.defaultFormatter": "esbenp.prettier-vscode",
+    "eslint.probe": ["javascript", "javascriptreact", "typescript", "typescriptreact"],
+    "editor.formatOnSave": true,
+    "editor.formatOnPaste": false,
+    // Runs Prettier, then ESLint
+    "editor.codeActionsOnSave": ["source.formatDocument", "source.fixAll.eslint"],
+    "[xml]": {
+        "editor.defaultFormatter": "redhat.vscode-xml"
+    },
+    "[ignore]": {
+        "editor.defaultFormatter": "foxundermoon.shell-format"
+    },
+    "files.exclude": {
+        "**/node_modules": true,
+        "**/yarn.lock": true,
+        "**/yarn-error.log": true,
+        "**/.prettierignore": true,
+        "**/.eslintignore": true,
+
+        "**/postcss.config.js": true,
+        "**/tsconfig.tsbuildinfo": true
+    }
+}
