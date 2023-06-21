@@ -9,7 +9,7 @@ import type { ClientConfig, QueryResultRow } from 'pg';
 import { enumType, objectType, queryType, mutationType, intArg, nonNull, inputObjectType, arg, list } from 'nexus';
 import { pascalCaseToSnakeCase, toCamelCase, toNameCase, toPascalCase } from './utils/string';
 import { getType, pgTypesToGraphQLCustomObjects } from './utils/db/pgTypesToGraphql';
-import { removeDuplicates } from './utils/filters';
+import { mergeObjectsWithSameName, removeDuplicates } from './utils/filters';
 import { execQuery } from './utils/db/execQuery';
 
 export type Operations = 'CREATE' | 'READ' | 'UPDATE' | 'DELETE';
@@ -52,7 +52,7 @@ export type SchemaOptions = {
 };
 
 export interface GenerateDBSchemaOptions {
-    schemas?: [SchemaOptions];
+    schemas?: SchemaOptions[];
     generateForeignTables?: boolean;
 }
 
@@ -72,7 +72,7 @@ export const generateDBSchema = async (
      * @param schemas - The array of schema options.
      * @returns The schema filter with the specified name, or undefined if not found.
      */
-    const getSchemaFilter = (name: string, schemas?: [SchemaOptions]) => schemas?.find(sc => sc.name === name);
+    const getSchemaFilter = (name: string, schemas?: SchemaOptions[]) => schemas?.find(sc => sc.name === name);
 
     /**
      * Retrieves the table filter with the specified schema name and table name from the given schemas.
@@ -81,7 +81,7 @@ export const generateDBSchema = async (
      * @param schemas - The array of schema options.
      * @returns The table filter with the specified schema name and table name, or undefined if not found.
      */
-    const getTableFilter = (schemaName: string, tableName: string, schemas?: [SchemaOptions]) =>
+    const getTableFilter = (schemaName: string, tableName: string, schemas?: SchemaOptions[]) =>
         getSchemaFilter(schemaName, schemas)?.tables.find(t => t.name === tableName);
 
     /**
@@ -91,7 +91,7 @@ export const generateDBSchema = async (
      * @param schemas - The array of schema options.
      * @returns The view filter with the specified schema name and view name, or undefined if not found.
      */
-    const getViewFilter = (schemaName: string, viewName: string, schemas?: [SchemaOptions]) =>
+    const getViewFilter = (schemaName: string, viewName: string, schemas?: SchemaOptions[]) =>
         getSchemaFilter(schemaName, schemas)?.views?.find(v => v.name === viewName);
 
     /**
@@ -99,7 +99,7 @@ export const generateDBSchema = async (
      * @param schemas - The array of schema options.
      * @returns The WHERE clause for the schema filters.
      */
-    const makeSchemasWhere = (schemas?: [SchemaOptions]) =>
+    const makeSchemasWhere = (schemas?: SchemaOptions[]) =>
         schemas ? `WHERE ${schemas.map(sc => `nspname = '${sc.name}'`).join(' OR ')}` : '';
 
     /**
@@ -127,7 +127,7 @@ export const generateDBSchema = async (
      * @param schemas - The array of schema options.
      * @returns The WHERE clause for the table filters.
      */
-    const makeTablesWhere = (schemaName: string, schemas?: [SchemaOptions]) => {
+    const makeTablesWhere = (schemaName: string, schemas?: SchemaOptions[]) => {
         const sFilter = getSchemaFilter(schemaName, schemas);
 
         return sFilter
@@ -152,7 +152,7 @@ export const generateDBSchema = async (
      * @param schemas - The array of schema options.
      * @returns The WHERE clause for the view filters.
      */
-    const makeViewsWhere = (schemaName: string, schemas?: [SchemaOptions]) => {
+    const makeViewsWhere = (schemaName: string, schemas?: SchemaOptions[]) => {
         const sFilter = getSchemaFilter(schemaName, schemas);
 
         return sFilter?.views
@@ -176,7 +176,7 @@ export const generateDBSchema = async (
      * @param schemas - The array of schema options.
      * @returns A promise that resolves to an array of schemas.
      */
-    const genSchema = async (schemas?: [SchemaOptions]) =>
+    const genSchema = async (schemas?: SchemaOptions[]) =>
         Promise.all(
             await execQuery<{
                 name: string;
@@ -400,7 +400,20 @@ export const generateDBSchema = async (
                 ),
         );
 
-    const schema = removeDuplicates(await genSchema(options?.schemas));
+    const schema = removeDuplicates(
+        await genSchema(
+            mergeObjectsWithSameName(
+                options?.schemas
+                    ? options.schemas.map(sc => ({
+                          ...sc,
+                          tables: mergeObjectsWithSameName(sc.tables, 'name'),
+                          views: sc.views ? mergeObjectsWithSameName(sc.views, 'name') : sc.views,
+                      }))
+                    : [],
+                'name',
+            ),
+        ),
+    );
 
     if (options?.generateForeignTables) {
         let schemas: SchemaOptions[] = [];
@@ -444,7 +457,7 @@ export const generateDBSchema = async (
         );
 
         if (schemas.length > 0) {
-            const dbSchemaLinked = await genSchema(schemas as [SchemaOptions]);
+            const dbSchemaLinked = await genSchema(schemas as SchemaOptions[]);
 
             const unifiedSchemas: Schema[] = [];
 
@@ -1223,7 +1236,7 @@ export const generateSchema = async (
 
         if (schemas.length > 0) {
             const dbSchemaLinked = await generateDBSchema(credentials, {
-                schemas: schemas as [SchemaOptions],
+                schemas,
             });
 
             dbSchemaLinked.forEach(s => s.tables.forEach(t => addObjectName(s, t)));
@@ -1332,199 +1345,228 @@ export const generateSchema = async (
             .filter(o => o !== undefined),
         ...pgTypesToGraphQLCustomObjects(),
         ...inputTypesGraphQL(objectsName),
-        mutationType({
-            definition(t) {
-                objectsName.forEach(({ name, table, schema: s }) => {
-                    if (table.operations.includes('CREATE')) {
-                        t.nonNull.field(toCamelCase('create' + name), {
-                            type: toPascalCase(pascalCaseToSnakeCase('MutationType' + name)),
-                            args: {
-                                values: nonNull(
-                                    list(
-                                        nonNull(
-                                            arg({ type: toPascalCase(pascalCaseToSnakeCase(name + 'MutationCreate')) }),
-                                        ),
-                                    ),
-                                ),
-                            },
-                            description: 'Create a new ' + toNameCase(table.name.replace(/_/g, ' ')) + '.',
-                            resolve: async (_root, args) => {
-                                const { query, values } = makeMutationCreate(s, table, args.values);
+        objectsName
+            .map(
+                ({ table }) =>
+                    table.operations.includes('CREATE') ||
+                    table.operations.includes('UPDATE') ||
+                    table.operations.includes('DELETE'),
+            )
+            .some(Boolean)
+            ? mutationType({
+                  definition(t) {
+                      objectsName.forEach(({ name, table, schema: s }) => {
+                          if (table.operations.includes('CREATE')) {
+                              t.nonNull.field(toCamelCase('create' + name), {
+                                  type: toPascalCase(pascalCaseToSnakeCase('MutationType' + name)),
+                                  args: {
+                                      values: nonNull(
+                                          list(
+                                              nonNull(
+                                                  arg({
+                                                      type: toPascalCase(
+                                                          pascalCaseToSnakeCase(name + 'MutationCreate'),
+                                                      ),
+                                                  }),
+                                              ),
+                                          ),
+                                      ),
+                                  },
+                                  description: 'Create a new ' + toNameCase(table.name.replace(/_/g, ' ')) + '.',
+                                  resolve: async (_root, args) => {
+                                      const { query, values } = makeMutationCreate(s, table, args.values);
 
-                                const r: QueryResultRow[] = await execQuery(credentials, query, values).then(
-                                    r => r?.rows ?? [],
-                                );
+                                      const r: QueryResultRow[] = await execQuery(credentials, query, values).then(
+                                          r => r?.rows ?? [],
+                                      );
 
-                                const fks = table.columns.filter(
-                                    c => c.foreignKey.is && c.foreignKey.data != undefined && linkForeign,
-                                );
+                                      const fks = table.columns.filter(
+                                          c => c.foreignKey.is && c.foreignKey.data != undefined && linkForeign,
+                                      );
 
-                                const finalResult = await linkResultWithForeignsKeys(fks, table, r, credentials).then(
-                                    r => r.filter(Boolean),
-                                );
+                                      const finalResult = await linkResultWithForeignsKeys(
+                                          fks,
+                                          table,
+                                          r,
+                                          credentials,
+                                      ).then(r => r.filter(Boolean));
 
-                                return { rowsAffected: finalResult.length, results: finalResult };
-                            },
-                        });
-                    }
+                                      return { rowsAffected: finalResult.length, results: finalResult };
+                                  },
+                              });
+                          }
 
-                    if (table.operations.includes('UPDATE')) {
-                        t.nonNull.field(toCamelCase('update' + name), {
-                            type: toPascalCase(pascalCaseToSnakeCase('MutationType' + name)),
-                            args: {
-                                value: nonNull(
-                                    arg({ type: toPascalCase(pascalCaseToSnakeCase(name + 'MutationUpdate')) }),
-                                ),
-                                where: nonNull(
-                                    arg({
-                                        type: toPascalCase('where_' + pascalCaseToSnakeCase(name)),
-                                        description: 'Where for the update in database',
-                                    }),
-                                ),
-                            },
-                            description: 'Update a existing ' + toNameCase(table.name.replace(/_/g, ' ')) + '.',
-                            resolve: async (_root, args) => {
-                                const { query, values } = makeMutationUpdate(s, table, args.value, args.where);
+                          if (table.operations.includes('UPDATE')) {
+                              t.nonNull.field(toCamelCase('update' + name), {
+                                  type: toPascalCase(pascalCaseToSnakeCase('MutationType' + name)),
+                                  args: {
+                                      value: nonNull(
+                                          arg({ type: toPascalCase(pascalCaseToSnakeCase(name + 'MutationUpdate')) }),
+                                      ),
+                                      where: nonNull(
+                                          arg({
+                                              type: toPascalCase('where_' + pascalCaseToSnakeCase(name)),
+                                              description: 'Where for the update in database',
+                                          }),
+                                      ),
+                                  },
+                                  description: 'Update a existing ' + toNameCase(table.name.replace(/_/g, ' ')) + '.',
+                                  resolve: async (_root, args) => {
+                                      const { query, values } = makeMutationUpdate(s, table, args.value, args.where);
 
-                                const r: QueryResultRow[] = await execQuery(credentials, query, values).then(
-                                    r => r?.rows ?? [],
-                                );
+                                      const r: QueryResultRow[] = await execQuery(credentials, query, values).then(
+                                          r => r?.rows ?? [],
+                                      );
 
-                                const fks = table.columns.filter(
-                                    c => c.foreignKey.is && c.foreignKey.data != undefined && linkForeign,
-                                );
+                                      const fks = table.columns.filter(
+                                          c => c.foreignKey.is && c.foreignKey.data != undefined && linkForeign,
+                                      );
 
-                                const finalResult = await linkResultWithForeignsKeys(fks, table, r, credentials).then(
-                                    r => r.filter(Boolean),
-                                );
+                                      const finalResult = await linkResultWithForeignsKeys(
+                                          fks,
+                                          table,
+                                          r,
+                                          credentials,
+                                      ).then(r => r.filter(Boolean));
 
-                                return { rowsAffected: finalResult.length, results: finalResult };
-                            },
-                        });
-                    }
+                                      return { rowsAffected: finalResult.length, results: finalResult };
+                                  },
+                              });
+                          }
 
-                    if (table.operations.includes('DELETE')) {
-                        t.nonNull.field(toCamelCase('delete' + name), {
-                            type: toPascalCase(pascalCaseToSnakeCase('MutationType' + name)),
-                            args: {
-                                where: nonNull(
-                                    arg({
-                                        type: toPascalCase('where_' + pascalCaseToSnakeCase(name)),
-                                        description: 'Where for the delete in database',
-                                    }),
-                                ),
-                            },
-                            description: 'Delete a existing ' + toNameCase(table.name.replace(/_/g, ' ')) + '.',
-                            resolve: async (_root, args) => {
-                                const { query, values } = makeMutationDelete(s, table, args.where);
+                          if (table.operations.includes('DELETE')) {
+                              t.nonNull.field(toCamelCase('delete' + name), {
+                                  type: toPascalCase(pascalCaseToSnakeCase('MutationType' + name)),
+                                  args: {
+                                      where: nonNull(
+                                          arg({
+                                              type: toPascalCase('where_' + pascalCaseToSnakeCase(name)),
+                                              description: 'Where for the delete in database',
+                                          }),
+                                      ),
+                                  },
+                                  description: 'Delete a existing ' + toNameCase(table.name.replace(/_/g, ' ')) + '.',
+                                  resolve: async (_root, args) => {
+                                      const { query, values } = makeMutationDelete(s, table, args.where);
 
-                                const r: QueryResultRow[] = await execQuery(credentials, query, values).then(
-                                    r => r?.rows ?? [],
-                                );
+                                      const r: QueryResultRow[] = await execQuery(credentials, query, values).then(
+                                          r => r?.rows ?? [],
+                                      );
 
-                                const fks = table.columns.filter(
-                                    c => c.foreignKey.is && c.foreignKey.data != undefined && linkForeign,
-                                );
+                                      const fks = table.columns.filter(
+                                          c => c.foreignKey.is && c.foreignKey.data != undefined && linkForeign,
+                                      );
 
-                                const finalResult = await linkResultWithForeignsKeys(fks, table, r, credentials).then(
-                                    r => r.filter(Boolean),
-                                );
+                                      const finalResult = await linkResultWithForeignsKeys(
+                                          fks,
+                                          table,
+                                          r,
+                                          credentials,
+                                      ).then(r => r.filter(Boolean));
 
-                                return { rowsAffected: finalResult.length, results: finalResult };
-                            },
-                        });
-                    }
-                });
-            },
-        }),
-        queryType({
-            definition(t) {
-                objectsName.forEach(({ name, table, schema: s }) => {
-                    if (table.operations.includes('READ')) {
-                        t.nonNull.field(toCamelCase('get' + name), {
-                            type: toPascalCase(pascalCaseToSnakeCase('QueryType' + name)),
-                            args: {
-                                page: nonNull(
-                                    intArg({
-                                        default: 1,
-                                        description: 'The page number where the data must be consulted',
-                                    }),
-                                ),
-                                maxRows: nonNull(
-                                    intArg({
-                                        default: 20,
-                                        description: 'The number of results that can be returned (max is 100)',
-                                    }),
-                                ),
-                                where: arg({
-                                    type: toPascalCase('where_' + pascalCaseToSnakeCase(name)),
-                                    description: 'Where for the query in database',
-                                }),
-                                orderBy: arg({
-                                    type: toPascalCase('order_by_' + pascalCaseToSnakeCase(name)),
-                                    description: 'Ordering for the query in database',
-                                }),
-                            },
-                            description:
-                                'Get results for the object ' + toNameCase(table.name.replace(/_/g, ' ')) + '.',
-                            resolve: async (_root, args) => {
-                                const numberOfResults = (
-                                    args.maxRows <= 100 && args.maxRows > 0 ? args.maxRows : 100
-                                ) as number;
-                                const pageNumber = Number(args.page) >= 0 ? Number(args.page) - 1 : 0;
+                                      return { rowsAffected: finalResult.length, results: finalResult };
+                                  },
+                              });
+                          }
+                      });
+                  },
+              })
+            : undefined,
+        objectsName.map(({ table }) => table.operations.includes('READ')).some(Boolean)
+            ? queryType({
+                  definition(t) {
+                      objectsName.forEach(({ name, table, schema: s }) => {
+                          if (table.operations.includes('READ')) {
+                              t.nonNull.field(toCamelCase('get' + name), {
+                                  type: toPascalCase(pascalCaseToSnakeCase('QueryType' + name)),
+                                  args: {
+                                      page: nonNull(
+                                          intArg({
+                                              default: 1,
+                                              description: 'The page number where the data must be consulted',
+                                          }),
+                                      ),
+                                      maxRows: nonNull(
+                                          intArg({
+                                              default: 20,
+                                              description: 'The number of results that can be returned (max is 100)',
+                                          }),
+                                      ),
+                                      where: arg({
+                                          type: toPascalCase('where_' + pascalCaseToSnakeCase(name)),
+                                          description: 'Where for the query in database',
+                                      }),
+                                      orderBy: arg({
+                                          type: toPascalCase('order_by_' + pascalCaseToSnakeCase(name)),
+                                          description: 'Ordering for the query in database',
+                                      }),
+                                  },
+                                  description:
+                                      'Get results for the object ' + toNameCase(table.name.replace(/_/g, ' ')) + '.',
+                                  resolve: async (_root, args) => {
+                                      const numberOfResults = (
+                                          args.maxRows <= 100 && args.maxRows > 0 ? args.maxRows : 100
+                                      ) as number;
+                                      const pageNumber = Number(args.page) >= 0 ? Number(args.page) - 1 : 0;
 
-                                const { query, values, whereQuery } = makeQuery(
-                                    s,
-                                    table,
-                                    numberOfResults,
-                                    pageNumber * numberOfResults,
-                                    args.where,
-                                    args.orderBy,
-                                );
+                                      const { query, values, whereQuery } = makeQuery(
+                                          s,
+                                          table,
+                                          numberOfResults,
+                                          pageNumber * numberOfResults,
+                                          args.where,
+                                          args.orderBy,
+                                      );
 
-                                const r: QueryResultRow[] = await execQuery(credentials, query, values).then(
-                                    r => r?.rows ?? [],
-                                );
+                                      const r: QueryResultRow[] = await execQuery(credentials, query, values).then(
+                                          r => r?.rows ?? [],
+                                      );
 
-                                const fks = table.columns.filter(
-                                    c => c.foreignKey.is && c.foreignKey.data != undefined && linkForeign,
-                                );
+                                      const fks = table.columns.filter(
+                                          c => c.foreignKey.is && c.foreignKey.data != undefined && linkForeign,
+                                      );
 
-                                const finalResult = await linkResultWithForeignsKeys(fks, table, r, credentials);
+                                      const finalResult = await linkResultWithForeignsKeys(fks, table, r, credentials);
 
-                                let { pages, total_rows: totalRows } =
-                                    (await execQuery<{
-                                        pages?: number;
-                                        total_rows?: number;
-                                    }>(
-                                        credentials,
-                                        getPagesQuery(
-                                            s.name,
-                                            table.name,
-                                            whereQuery ? { sql: whereQuery, finalIndex: values.length - 1 } : undefined,
-                                        ),
-                                        [...values.slice(0, -2), numberOfResults],
-                                    ).then(r => (r?.rows ?? [])[0])) ?? {};
+                                      let { pages, total_rows: totalRows } =
+                                          (await execQuery<{
+                                              pages?: number;
+                                              total_rows?: number;
+                                          }>(
+                                              credentials,
+                                              getPagesQuery(
+                                                  s.name,
+                                                  table.name,
+                                                  whereQuery
+                                                      ? { sql: whereQuery, finalIndex: values.length - 1 }
+                                                      : undefined,
+                                              ),
+                                              [...values.slice(0, -2), numberOfResults],
+                                          ).then(r => (r?.rows ?? [])[0])) ?? {};
 
-                                pages = Number(pages);
-                                totalRows = Number(totalRows);
+                                      pages = Number(pages);
+                                      totalRows = Number(totalRows);
 
-                                return {
-                                    pages: typeof pages != 'number' || Number.isNaN(pages) ? 1 : pages + 1,
-                                    totalRows: typeof totalRows != 'number' || Number.isNaN(totalRows) ? 0 : totalRows,
-                                    currentPage: pageNumber <= 0 ? 1 : pageNumber,
-                                    rowsPerPage: numberOfResults,
-                                    hasNextPage:
-                                        (typeof pages != 'number' || Number.isNaN(pages) ? 0 : pages) - pageNumber > 0,
-                                    results: finalResult.filter(Boolean),
-                                };
-                            },
-                        });
-                    }
-                });
-            },
-        }),
-    ];
+                                      return {
+                                          pages: typeof pages != 'number' || Number.isNaN(pages) ? 1 : pages + 1,
+                                          totalRows:
+                                              typeof totalRows != 'number' || Number.isNaN(totalRows) ? 0 : totalRows,
+                                          currentPage: pageNumber <= 0 ? 1 : pageNumber,
+                                          rowsPerPage: numberOfResults,
+                                          hasNextPage:
+                                              (typeof pages != 'number' || Number.isNaN(pages) ? 0 : pages) -
+                                                  pageNumber >
+                                              0,
+                                          results: finalResult.filter(Boolean),
+                                      };
+                                  },
+                              });
+                          }
+                      });
+                  },
+              })
+            : undefined,
+    ].filter(Boolean);
 };
 
 /**
