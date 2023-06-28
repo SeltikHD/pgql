@@ -1,6 +1,6 @@
 {
-    "name": "pgql",
-    "version": "1.0.1",
+    "name": "@nodestitch/pgql",
+    "version": "1.0.0",
     "description": "A package to transform a Postgres database into a GraphQL Nexus schema.",
     "main": "lib/index.js",
     "types": "lib/index.d.ts",
@@ -8,6 +8,7 @@
     "bugs": {
         "url": "https://github.com/SeltikHD/pgql/issues"
     },
+    "private": false,
     "scripts": {
         "test": "jest",
         "build": "tsc --skipLibCheck",
@@ -18,17 +19,18 @@
         "format:fix-all": "yarn format:fix \"src/**/*.*\"",
         "format:lint": "yarn format:fix \"src/**/*.*\" && yarn lint:fix \"src/**/*.*\"",
         "prepare": "ts-patch install",
-        "prepublish": "yarn build"
+        "prepublish": "yarn build",
+        "publish": "yarn publish --access public"
     },
     "dependencies": {
         "nexus": "^1.3.0",
-        "pg": "^8.11.0"
+        "pg": "^8.11.1"
     },
     "devDependencies": {
         "@types/jest": "^29.5.2",
         "@types/pg": "^8.10.2",
-        "@typescript-eslint/eslint-plugin": "^5.60.0",
-        "@typescript-eslint/parser": "^5.60.0",
+        "@typescript-eslint/eslint-plugin": "^5.60.1",
+        "@typescript-eslint/parser": "^5.60.1",
         "dotenv": "^16.3.1",
         "eslint": "^8.43.0",
         "eslint-config-prettier": "^8.8.0",
@@ -40,9 +42,9 @@
         "prettier": "^2.8.8",
         "ts-jest": "^29.1.0",
         "ts-node": "^10.9.1",
-        "ts-patch": "^3.0.0",
+        "ts-patch": "^3.0.1",
         "ts-transformer-keys": "^0.4.4",
-        "typescript": "^5.1.3",
+        "typescript": "^5.1.5",
         "typia": "^4.1.1"
     },
     "keywords": [
