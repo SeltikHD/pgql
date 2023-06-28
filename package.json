@@ -1,6 +1,6 @@
 {
     "name": "@nodestitch/pgql",
-    "version": "1.0.2",
+    "version": "1.0.5",
     "description": "A package to transform a Postgres database into a GraphQL Nexus schema.",
     "main": "lib/index.js",
     "types": "lib/index.d.ts",
@@ -19,8 +19,7 @@
         "format:fix-all": "yarn format:fix \"src/**/*.*\"",
         "format:lint": "yarn format:fix \"src/**/*.*\" && yarn lint:fix \"src/**/*.*\"",
         "prepare": "ts-patch install",
-        "prepublish": "yarn build",
-        "publish": "yarn publish --access public"
+        "prepublish": "yarn build"
     },
     "dependencies": {
         "nexus": "^1.3.0",
