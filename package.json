@@ -1,6 +1,6 @@
 {
     "name": "@nodestitch/pgql",
-    "version": "1.0.5",
+    "version": "1.0.6",
     "description": "A package to transform a Postgres database into a GraphQL Nexus schema.",
     "main": "lib/index.js",
     "types": "lib/index.d.ts",
@@ -57,5 +57,12 @@
         "name": "Ewerthon Kawan",
         "email": "ewerthonkawan@gmail.com"
     },
+    "files": [
+        "lib/**",
+        "src/**",
+        "types/**",
+        "README.md",
+        "LICENSE"
+    ],
     "license": "ISC"
 }
