@@ -1,6 +1,6 @@
 {
     "name": "@nodestitch/pgql",
-    "version": "1.0.6",
+    "version": "1.0.9",
     "description": "A package to transform a Postgres database into a GraphQL Nexus schema.",
     "main": "lib/index.js",
     "types": "lib/index.d.ts",
@@ -43,7 +43,7 @@
         "ts-node": "^10.9.1",
         "ts-patch": "^3.0.1",
         "ts-transformer-keys": "^0.4.4",
-        "typescript": "^5.1.5",
+        "typescript": "^5.1.6",
         "typia": "^4.1.1"
     },
     "keywords": [
