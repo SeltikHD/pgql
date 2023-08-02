@@ -1329,7 +1329,7 @@ export const generateSchema = async (
                           },
                       })
                     : undefined,
-                operations.includes('CREATE' || 'UPDATE')
+                operations.includes('CREATE') || operations.includes('UPDATE')
                     ? objectType({
                           name: toPascalCase(pascalCaseToSnakeCase('MutationType' + name)),
                           description,
