@@ -9,7 +9,6 @@
     "extends": [
         "plugin:jest/recommended",
         "eslint:recommended",
-        "plugin:jsx-a11y/recommended",
         "plugin:@typescript-eslint/recommended",
         "plugin:import/typescript",
         "plugin:prettier/recommended",
@@ -20,7 +19,7 @@
         "ecmaVersion": "latest",
         "sourceType": "module"
     },
-    "plugins": ["@typescript-eslint", "import", "jsx-a11y", "prettier", "jest"],
+    "plugins": ["@typescript-eslint", "import", "prettier", "jest"],
     "rules": {
         "jest/valid-expect": [
             "error",

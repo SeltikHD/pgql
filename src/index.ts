@@ -395,7 +395,7 @@ export const generateDBSchema = async (
                                             }),
                                         ),
                                 ),
-                            } as Schema),
+                            }) as Schema,
                     ),
                 ),
         );
