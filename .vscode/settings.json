@@ -4,7 +4,6 @@
     "editor.lineHeight": 25,
     "eslint.format.enable": true,
     "eslint.lintTask.enable": true,
-    "eslint.packageManager": "yarn",
     "markdown.preview.breaks": true,
     "prettier.configPath": ".prettierrc",
     "prettier.jsxSingleQuote": true,

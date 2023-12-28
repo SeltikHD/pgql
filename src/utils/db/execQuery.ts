@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/ban-ts-comment */
 import { type QueryResultRow, type PoolConfig, Pool, types } from 'pg';
 import { replaceNull } from '../string';
 import parseByteA from 'postgres-bytea';
@@ -11,7 +10,6 @@ export function defineParsers() {
     types.setTypeParser(114, v => String(v)); // json to string
     types.setTypeParser(3802, v => String(v)); // jsonb to string
 
-    // @ts-ignore
     types.setTypeParser(199, v => {
         if (!v) return null;
 
@@ -23,7 +21,6 @@ export function defineParsers() {
         );
     }); // json[] to string
 
-    // @ts-ignore
     types.setTypeParser(3807, v => {
         if (!v) return null;
 
@@ -62,7 +59,6 @@ export function defineParsers() {
         };
     }); // Interval to obj
 
-    // @ts-ignore
     types.setTypeParser(1016, value => {
         if (!value) return null;
 
@@ -74,7 +70,6 @@ export function defineParsers() {
         );
     }); // Big int[] to int[]
 
-    // @ts-ignore
     types.setTypeParser(1001, value => {
         if (!value) return null;
 
@@ -88,11 +83,11 @@ export function defineParsers() {
 }
 
 const credentialsDefault = {
-    user: process.env.PG_USER_main,
-    host: process.env.PG_HOST_main,
-    database: process.env.PG_DB_main,
-    password: process.env.PG_PASSWORD_main,
-    port: +(process.env.PG_PORT_main ?? 5432),
+    user: process.env.PGQL_USER,
+    host: process.env.PGQL_HOST,
+    database: process.env.PGQL_DATABASE,
+    password: process.env.PGQL_PASSWORD,
+    port: +(process.env.PGQL_PORT ?? 5432),
 };
 
 export async function execQuery<T extends QueryResultRow, P = any>(

@@ -406,7 +406,6 @@ export const generateDBSchema = async (
                 options?.schemas
                     ? options.schemas.map(sc => ({
                           ...sc,
-                          tables: mergeObjectsWithSameName(sc.tables, 'name'),
                           views: sc.views ? mergeObjectsWithSameName(sc.views, 'name') : sc.views,
                       }))
                     : [],
@@ -457,7 +456,7 @@ export const generateDBSchema = async (
         );
 
         if (schemas.length > 0) {
-            const dbSchemaLinked = await genSchema(schemas as SchemaOptions[]);
+            const dbSchemaLinked = await genSchema(schemas);
 
             const unifiedSchemas: Schema[] = [];
 
@@ -661,9 +660,15 @@ function makeMutationCreate(
 
     const finalValues = values.map(v => keys.map(k => v[k] ?? null));
 
-    const query = `INSERT INTO ${schema.name}.${name}(${keys.join(', ')}) VALUES ${finalValues
-        .map((v, multiplier) => `(${v.map((_, i) => `$${keys.length * multiplier + (i + 1)}`).join(', ')})`)
-        .join(', ')} RETURNING *`;
+    const stringValues = table.defaultWhere
+        ? `SELECT ${finalValues
+              .map((v, multiplier) => `${v.map((_, i) => `$${keys.length * multiplier + (i + 1)}`).join(', ')}`)
+              .join(', ')} WHERE (${table.defaultWhere})`
+        : 'VALUES ' +
+          finalValues
+              .map((v, multiplier) => `(${v.map((_, i) => `$${keys.length * multiplier + (i + 1)}`).join(', ')})`)
+              .join(', ');
+    const query = `INSERT INTO ${schema.name}.${name}(${keys.join(', ')}) ${stringValues} RETURNING *`;
 
     return {
         query,
@@ -799,7 +804,10 @@ function makeQuery(
     };
 
     const orderByQuery = orderBy ? orderBySQL(orderBy) : '';
-    const whereQuery = where?.AND || where?.OR ? whereSQL(where, values, table) : '';
+    const whereQuery =
+        where?.AND || where?.OR
+            ? whereSQL(where, values, table)
+            : `WHERE ${table.defaultWhere ? `(${table.defaultWhere}) = TRUE` : 'TRUE = TRUE'}`;
 
     values.push(String(limit), String(offset));
 

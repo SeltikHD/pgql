@@ -18,9 +18,6 @@
         "noUnusedParameters": false,
         "preserveWatchOutput": true,
         "plugins": [
-            {
-                "transform": "typia/lib/transform"
-            },
             { "transform": "ts-transformer-keys/transformer" }
         ],
         "strictNullChecks": true
