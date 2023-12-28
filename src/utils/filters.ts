@@ -1,26 +1,9 @@
 export function removeDuplicates<T extends object>(values: T[]) {
-    type KeysFunctions = {
-        interfaceKeys: (<D extends object>() => Array<keyof D>) | null;
-        keysByValue: <F extends object>(value: F) => Array<keyof F>;
-    };
-
-    const keysFunctions: KeysFunctions = {
-        interfaceKeys: null,
-        keysByValue: <F extends object>(value: F) => Object.keys(value) as Array<keyof F>,
-    };
-
-    try {
-        // eslint-disable-next-line @typescript-eslint/no-var-requires
-        const interfaceKeys = require('ts-transformer-keys').keys as <D extends object>() => Array<keyof D>;
-        keysFunctions.interfaceKeys = <D extends object>() => interfaceKeys<D>();
-    } catch {
-        keysFunctions.interfaceKeys = null;
-    }
+    const keysByValue = <F extends object>(value: F) => Object.keys(value) as Array<keyof F>;
 
     if (values.length > 0) {
         let keys = [] as (keyof T)[];
-
-        keys = keysFunctions.interfaceKeys ? keysFunctions.interfaceKeys<T>() : keysFunctions.keysByValue(values[0]);
+        keys = keysByValue(values[0]);
 
         return values.filter(
             (value, index, self) =>

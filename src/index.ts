@@ -81,8 +81,8 @@ export const generateDBSchema = async (
      * @param schemas - The array of schema options.
      * @returns The table filter with the specified schema name and table name, or undefined if not found.
      */
-    const getTableFilter = (schemaName: string, tableName: string, schemas?: SchemaOptions[]) =>
-        getSchemaFilter(schemaName, schemas)?.tables.find(t => t.name === tableName);
+    const getTablesFilter = (schemaName: string, tableName: string, schemas?: SchemaOptions[]) =>
+        getSchemaFilter(schemaName, schemas)?.tables.filter(t => t.name === tableName);
 
     /**
      * Retrieves the view filter with the specified schema name and view name from the given schemas.
@@ -213,7 +213,7 @@ export const generateDBSchema = async (
                                     )
                                         .then(t => t?.rows ?? [])
                                         .then(ta =>
-                                            ta.map(async t => {
+                                            ta.flatMap(async t => {
                                                 if (t.type == 'table') {
                                                     const primariesKeys = await execQuery<{ column_name: string }>(
                                                         credentials,
@@ -281,8 +281,6 @@ export const generateDBSchema = async (
                                                         [s.name, t.name],
                                                     ).then(r => r?.rows ?? []);
 
-                                                    const tableFilter = getTableFilter(s.name, t.name, schemas);
-
                                                     const columns = await execQuery<{
                                                         name: string;
                                                         type: string;
@@ -335,21 +333,28 @@ export const generateDBSchema = async (
                                                                 }) as Column[],
                                                         );
 
-                                                    return {
-                                                        ...t,
-                                                        operations: tableFilter?.operations ?? [],
-                                                        defaultWhere: tableFilter?.defaultWhere ?? [],
-                                                        columns,
-                                                        cols: columns
-                                                            .map(c => c.name)
-                                                            .filter(c =>
-                                                                tableFilter &&
-                                                                Array.isArray(tableFilter.cols) &&
-                                                                tableFilter.cols.length > 0
-                                                                    ? tableFilter.cols.includes(c)
-                                                                    : true,
-                                                            ),
-                                                    } as Table;
+                                                    const tablesFilter = getTablesFilter(s.name, t.name, schemas);
+
+                                                    return (
+                                                        tablesFilter?.map(
+                                                            tableFilter =>
+                                                                ({
+                                                                    ...t,
+                                                                    operations: tableFilter?.operations ?? [],
+                                                                    defaultWhere: tableFilter?.defaultWhere,
+                                                                    columns,
+                                                                    cols: columns
+                                                                        .map(c => c.name)
+                                                                        .filter(c =>
+                                                                            tableFilter &&
+                                                                            Array.isArray(tableFilter.cols) &&
+                                                                            (tableFilter.cols?.length ?? 0) > 0
+                                                                                ? tableFilter.cols.includes(c)
+                                                                                : true,
+                                                                        ),
+                                                                }) as Table,
+                                                        ) ?? []
+                                                    );
                                                 } else if (t.type == 'view') {
                                                     return {
                                                         ...t,
@@ -394,7 +399,7 @@ export const generateDBSchema = async (
                                                 }
                                             }),
                                         ),
-                                ),
+                                ).then(t => t.flat(2)),
                             }) as Schema,
                     ),
                 ),
@@ -406,6 +411,7 @@ export const generateDBSchema = async (
                 options?.schemas
                     ? options.schemas.map(sc => ({
                           ...sc,
+                          tables: sc.tables.flat(2),
                           views: sc.views ? mergeObjectsWithSameName(sc.views, 'name') : sc.views,
                       }))
                     : [],
@@ -1186,7 +1192,8 @@ export const generateSchema = async (
                     name = name + i;
                 }
 
-                if (!objectsName.find(o => o.name === name)) {
+                const sameObjectName = objectsName.filter(o => o.name === name);
+                if (sameObjectName.length <= 0) {
                     objectsName.push({
                         name,
                         table: t,
@@ -1250,6 +1257,22 @@ export const generateSchema = async (
             dbSchemaLinked.forEach(s => s.tables.forEach(t => addObjectName(s, t)));
         }
     }
+
+    //Function to treat the names
+    const treatName = (name: string, operation: Operations) => {
+        const obs = objectsName.filter(o => o.name.includes(name.replace(/\d+/g, '')) && o.name !== name);
+        let nameInUseForThisOperation = false;
+
+        if (obs.length > 0) {
+            obs.forEach(ob => {
+                if (ob.table.operations.includes(operation)) {
+                    nameInUseForThisOperation = true;
+                }
+            });
+        }
+
+        return nameInUseForThisOperation ? name : name.replace(/\d+/g, '');
+    };
 
     return [
         ...objectsName
@@ -1365,7 +1388,7 @@ export const generateSchema = async (
                   definition(t) {
                       objectsName.forEach(({ name, table, schema: s }) => {
                           if (table.operations.includes('CREATE')) {
-                              t.nonNull.field(toCamelCase('create' + name), {
+                              t.nonNull.field(toCamelCase('create' + treatName(name, 'CREATE')), {
                                   type: toPascalCase(pascalCaseToSnakeCase('MutationType' + name)),
                                   args: {
                                       values: nonNull(
@@ -1405,7 +1428,7 @@ export const generateSchema = async (
                           }
 
                           if (table.operations.includes('UPDATE')) {
-                              t.nonNull.field(toCamelCase('update' + name), {
+                              t.nonNull.field(toCamelCase('update' + treatName(name, 'UPDATE')), {
                                   type: toPascalCase(pascalCaseToSnakeCase('MutationType' + name)),
                                   args: {
                                       value: nonNull(
@@ -1443,7 +1466,7 @@ export const generateSchema = async (
                           }
 
                           if (table.operations.includes('DELETE')) {
-                              t.nonNull.field(toCamelCase('delete' + name), {
+                              t.nonNull.field(toCamelCase('delete' + treatName(name, 'DELETE')), {
                                   type: toPascalCase(pascalCaseToSnakeCase('MutationType' + name)),
                                   args: {
                                       where: nonNull(
@@ -1485,7 +1508,7 @@ export const generateSchema = async (
                   definition(t) {
                       objectsName.forEach(({ name, table, schema: s }) => {
                           if (table.operations.includes('READ')) {
-                              t.nonNull.field(toCamelCase('get' + name), {
+                              t.nonNull.field(toCamelCase('get' + treatName(name, 'READ')), {
                                   type: toPascalCase(pascalCaseToSnakeCase('QueryType' + name)),
                                   args: {
                                       page: nonNull(
