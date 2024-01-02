@@ -21,6 +21,7 @@ export type Table = {
     columns: Column[];
     operations: Operations[];
     type: 'table' | 'view';
+    variables?: Variable[];
     defaultWhere?: string;
     cols?: string[];
 };
@@ -41,6 +42,15 @@ export type Column = {
             referencedColumn: string;
         };
     };
+};
+
+export type VariableType = 'string' | 'int' | 'float' | 'boolean';
+
+export type Variable = {
+    name: string;
+    type: VariableType;
+    description?: string;
+    nullable: boolean;
 };
 
 export type TableFilter = Omit<Table, 'description' | 'columns' | 'type'>;
@@ -626,6 +636,13 @@ const whereSQL = (where: WhereType, values: string[], table: Table, startVarInde
     const AND = where.AND ? where.AND.map(a => mapWhere(a, 'AND')) : null;
     const OR = where.OR ? where.OR.map(o => mapWhere(o, 'OR')) : null;
 
+    if (table.defaultWhere && table.variables) {
+        table.variables.forEach((v, i) => {
+            const index = i + (startVarIndex ?? 0);
+            table.defaultWhere = table.defaultWhere?.replace(`$${v.name}`, `$${index}`);
+        });
+    }
+
     return (
         `WHERE ${table.defaultWhere ? `(${table.defaultWhere}) = TRUE AND ` : ''}` +
         [AND?.join(' AND '), OR?.join(' OR ')].filter(c => c != null).join(' AND ')
@@ -650,15 +667,27 @@ type MutationCreateReturn = {
  *
  * @param {Omit<Schema, 'tables'>} schema - The schema object.
  * @param {Table} table - The table object.
- * @param {{ [x: string]: MutationValuesType }[]} values - An array of objects representing the record values.
+ * @param {{ [x: string]: MutationValuesType }[]} [values] - An array of objects representing the record values.
+ * @param {{ [x: string]: MutationValuesType }[]} [variables] - Custom variables for the WHERE clause.
  * @returns {MutationCreateReturn} The query and values for the mutation operation.
  */
 function makeMutationCreate(
     schema: Omit<Schema, 'tables'>,
     table: Table,
     values: [{ [x: string]: MutationValuesType }],
+    variables?: [{ [x: string]: MutationValuesType }],
 ): MutationCreateReturn {
-    const { columns, cols, name } = table;
+    const { columns, cols, name, variables: vars } = table;
+
+    vars
+        ?.filter(v => !v.nullable && table.defaultWhere)
+        .forEach(v => {
+            variables?.forEach(va => {
+                if (!va[v.name]) {
+                    throw new Error(`Variable ${v.name} is required`);
+                }
+            });
+        });
 
     const keys = columns
         .filter(c => (Array.isArray(cols) && cols.length > 0 ? !c.nullable || cols.includes(c.name) : true))
@@ -666,8 +695,14 @@ function makeMutationCreate(
 
     const finalValues = values.map(v => keys.map(k => v[k] ?? null));
 
+    variables?.forEach((v, i) => {
+        finalValues.push(v as any);
+        table.defaultWhere = table.defaultWhere?.replace(`$${v.name}`, String(finalValues.length - i));
+    });
+
     const stringValues = table.defaultWhere
         ? `SELECT ${finalValues
+              .slice(0, finalValues.length - (vars?.length ?? 0))
               .map((v, multiplier) => `${v.map((_, i) => `$${keys.length * multiplier + (i + 1)}`).join(', ')}`)
               .join(', ')} WHERE (${table.defaultWhere})`
         : 'VALUES ' +
@@ -772,6 +807,13 @@ type QueryReturn = {
 };
 
 /**
+ * Represents the custom variable type.
+ */
+type VariableTypeObject = {
+    [x: string]: string | number | boolean | null;
+};
+
+/**
  * Generates the SQL query for selecting records.
  *
  * @param {Omit<Schema, 'tables'>} schema - The schema object.
@@ -779,6 +821,7 @@ type QueryReturn = {
  * @param {number} limit - The maximum number of records to retrieve.
  * @param {number} offset - The number of records to skip.
  * @param {WhereType} [where] - The conditions for the SELECT operation.
+ * @param {VariableTypeObject} [variables] - Custom variables for the WHERE clause.
  * @param {OrderByType} [orderBy] - The sorting criteria for the records.
  * @param {string[]} [cols] - The columns to include in the SELECT statement.
  * @returns {QueryReturn} The query, values, orderBy clause, and where clause for the SELECT operation.
@@ -789,6 +832,7 @@ function makeQuery(
     limit: number,
     offset: number,
     where?: WhereType,
+    variables?: VariableTypeObject,
     orderBy?: OrderByType,
     cols?: string[],
 ): QueryReturn {
@@ -797,7 +841,21 @@ function makeQuery(
             ? cols.join(', ')
             : '*';
 
-    const values: string[] = [];
+    const requiredVariables = table.variables?.filter(v => !v.nullable && table.defaultWhere).map(v => v.name) ?? [];
+    if (!Object.keys(variables ?? {}).every(v => requiredVariables.includes(v))) {
+        throw new Error(`One required variable is missing. Required variables: ${requiredVariables.join(', ')}`);
+    }
+
+    const values: string[] = [
+        ...Object.values(variables ?? {})
+            .filter(Boolean)
+            .map(v => String(v)),
+    ];
+
+    if (values.length < (table.variables?.length ?? 0)) {
+        const diff = (table.variables?.length ?? 0) - values.length;
+        values.push(...Array(diff).fill(null));
+    }
 
     const orderBySQL = (orderBy: OrderByType) => {
         const keys = Object.keys(orderBy);
@@ -1030,7 +1088,7 @@ const inputTypesGraphQL = (ob: PgToNexusObject[]): (NexusEnumTypeDef<string> | N
         }),
         ...ob
             .filter(o => o.table.operations.length > 0)
-            .flatMap(({ name, table: { name: tableName, columns, cols } }) => {
+            .flatMap(({ name, table: { name: tableName, columns, cols, variables } }) => {
                 const colsToMap = columns.filter(c =>
                     Array.isArray(cols) && cols.length > 0 ? cols.includes(c.name) : true,
                 );
@@ -1089,7 +1147,18 @@ const inputTypesGraphQL = (ob: PgToNexusObject[]): (NexusEnumTypeDef<string> | N
                             mapTypes(colsToMap, t, 'OrderByASCAndDESC');
                         },
                     }),
-                ];
+                    variables
+                        ? inputObjectType({
+                              name: toPascalCase('variables_' + pascalCaseToSnakeCase(name)),
+                              description: `The variables for the ${toNameCase(tableName.replace(/_/g, ' '))}.`,
+                              definition(t) {
+                                  variables.forEach(({ name: vName, type: vType, nullable, description }) => {
+                                      (nullable ? t.nullable : t.nonNull).field(vName, { type: vType, description });
+                                  });
+                              },
+                          })
+                        : undefined,
+                ].filter(Boolean) as (NexusEnumTypeDef<string> | NexusInputObjectTypeDef<string>)[];
             }),
     ];
 };
@@ -1527,6 +1596,12 @@ export const generateSchema = async (
                                           type: toPascalCase('where_' + pascalCaseToSnakeCase(name)),
                                           description: 'Where for the query in database',
                                       }),
+                                      variables: table.variables
+                                          ? arg({
+                                                type: toPascalCase('variables_' + name),
+                                                description: 'Custom variables for the query in database',
+                                            })
+                                          : undefined,
                                       orderBy: arg({
                                           type: toPascalCase('order_by_' + pascalCaseToSnakeCase(name)),
                                           description: 'Ordering for the query in database',
@@ -1546,6 +1621,7 @@ export const generateSchema = async (
                                           numberOfResults,
                                           pageNumber * numberOfResults,
                                           args.where,
+                                          args.variable,
                                           args.orderBy,
                                       );
 
