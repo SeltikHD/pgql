@@ -33,6 +33,7 @@ export type Column = {
     oid: number;
     nullable: boolean;
     isPrimaryKey: boolean;
+    isAutoIncrement: boolean;
     foreignKey: {
         is: boolean;
         data?: {
@@ -49,8 +50,10 @@ export type VariableType = 'string' | 'int' | 'float' | 'boolean';
 export type Variable = {
     name: string;
     type: VariableType;
-    description?: string;
     nullable: boolean;
+    description?: string;
+    defaultValue?: string | number | boolean;
+    isHidden?: boolean;
 };
 
 export type TableFilter = Omit<Table, 'description' | 'columns' | 'type'>;
@@ -297,6 +300,7 @@ export const generateDBSchema = async (
                                                         oid: number;
                                                         nullable: 'YES' | 'NO';
                                                         description?: string;
+                                                        is_autoincrement: boolean;
                                                     }>(
                                                         credentials,
                                                         `SELECT
@@ -304,7 +308,11 @@ export const generateDBSchema = async (
                                                             c.udt_name AS "type",
                                                             t.oid AS "oid",	
                                                             c.is_nullable AS "nullable",
-                                                            col_description(($1 || '.' || $2)::regclass, c.ordinal_position) AS description
+                                                            col_description(($1 || '.' || $2)::regclass, c.ordinal_position) AS description,
+                                                            CASE
+                                                                WHEN c.column_default LIKE 'nextval%' THEN TRUE
+                                                                ELSE FALSE
+                                                            END AS is_autoincrement
                                                         FROM
                                                             information_schema.columns c
                                                         JOIN pg_type t 
@@ -324,6 +332,7 @@ export const generateDBSchema = async (
 
                                                                     return {
                                                                         ...row,
+                                                                        isAutoIncrement: row.is_autoincrement,
                                                                         nullable: row.nullable === 'YES',
                                                                         isPrimaryKey: primariesKeys.includes(row.name),
                                                                         foreignKey: {
@@ -352,6 +361,7 @@ export const generateDBSchema = async (
                                                                     ...t,
                                                                     operations: tableFilter?.operations ?? [],
                                                                     defaultWhere: tableFilter?.defaultWhere,
+                                                                    variables: tableFilter?.variables,
                                                                     columns,
                                                                     cols: columns
                                                                         .map(c => c.name)
@@ -554,12 +564,12 @@ const operators = {
  * Generates the WHERE clause of an SQL query based on the provided conditions.
  *
  * @param {WhereType} where - The conditions for the WHERE clause.
- * @param {string[]} values - An array to store the parameter values.
+ * @param {(string | null)[]} values - An array to store the parameter values.
  * @param {Table} table - The table object containing column information.
  * @param {number} [startVarIndex] - The starting index for parameter values.
  * @returns {string} The generated WHERE clause.
  */
-const whereSQL = (where: WhereType, values: string[], table: Table, startVarIndex?: number): string => {
+const whereSQL = (where: WhereType, values: (string | null)[], table: Table, startVarIndex?: number): string => {
     type ANDOrOR = {
         col: Column;
         condition: { SINGLE?: SingleCondition; ARRAY?: ArrayCondition };
@@ -638,7 +648,7 @@ const whereSQL = (where: WhereType, values: string[], table: Table, startVarInde
 
     if (table.defaultWhere && table.variables) {
         table.variables.forEach((v, i) => {
-            const index = i + (startVarIndex ?? 0);
+            const index = i + (startVarIndex ?? 0) + 1;
             table.defaultWhere = table.defaultWhere?.replace(`$${v.name}`, `$${index}`);
         });
     }
@@ -658,7 +668,7 @@ type MutationValuesType = string | number | boolean | null;
  * Represents the return type for mutation Create operations.
  */
 type MutationCreateReturn = {
-    query: string;
+    query: string | string[];
     values: MutationValuesType[];
 };
 
@@ -675,45 +685,65 @@ function makeMutationCreate(
     schema: Omit<Schema, 'tables'>,
     table: Table,
     values: [{ [x: string]: MutationValuesType }],
-    variables?: [{ [x: string]: MutationValuesType }],
+    variables?: { [x: string]: MutationValuesType },
 ): MutationCreateReturn {
     const { columns, cols, name, variables: vars } = table;
 
-    vars
-        ?.filter(v => !v.nullable && table.defaultWhere)
-        .forEach(v => {
-            variables?.forEach(va => {
-                if (!va[v.name]) {
-                    throw new Error(`Variable ${v.name} is required`);
-                }
-            });
-        });
-
     const keys = columns
-        .filter(c => (Array.isArray(cols) && cols.length > 0 ? !c.nullable || cols.includes(c.name) : true))
+        .filter(c =>
+            Array.isArray(cols) && cols.length > 0
+                ? (!c.nullable || cols.includes(c.name)) && !c.isAutoIncrement
+                : !c.isAutoIncrement,
+        )
         .map(c => c.name);
 
+    const variablesValues: (string | null)[] = [
+        ...((vars
+            ?.map(v => (variables?.[v.name] ?? v.defaultValue ? String(variables?.[v.name] ?? v.defaultValue) : null))
+            .filter(Boolean) as string[]) ?? []),
+    ];
+
+    if (variablesValues.length < (vars?.length ?? 0)) {
+        const diff = (vars?.length ?? 0) - variablesValues.length;
+        variablesValues.push(...Array(diff).fill(null));
+    }
     const finalValues = values.map(v => keys.map(k => v[k] ?? null));
 
-    variables?.forEach((v, i) => {
-        finalValues.push(v as any);
-        table.defaultWhere = table.defaultWhere?.replace(`$${v.name}`, String(finalValues.length - i));
-    });
+    if (table.defaultWhere && vars) {
+        vars.forEach((v, i) => {
+            const index = finalValues.flat().length + i + 1;
+            table.defaultWhere = table.defaultWhere?.replace(`$${v.name}`, `$${index}`);
+        });
+    }
 
-    const stringValues = table.defaultWhere
-        ? `SELECT ${finalValues
-              .slice(0, finalValues.length - (vars?.length ?? 0))
-              .map((v, multiplier) => `${v.map((_, i) => `$${keys.length * multiplier + (i + 1)}`).join(', ')}`)
-              .join(', ')} WHERE (${table.defaultWhere})`
-        : 'VALUES ' +
-          finalValues
-              .map((v, multiplier) => `(${v.map((_, i) => `$${keys.length * multiplier + (i + 1)}`).join(', ')})`)
-              .join(', ');
-    const query = `INSERT INTO ${schema.name}.${name}(${keys.join(', ')}) ${stringValues} RETURNING *`;
+    if (table.defaultWhere && vars) {
+        const queries: string[] = [];
+        finalValues.forEach((v, multiplier) => {
+            const stringValues = `SELECT ${v.map((_, i) => `$${keys.length * multiplier + (i + 1)}`).join(', ')}
+            .join(', ')} WHERE (${table.defaultWhere})`;
+            queries.push(
+                `INSERT INTO ${schema.name}.${name}(${keys.map(k => `"${k}"`).join(', ')}) ${stringValues} RETURNING *`,
+            );
+        });
+
+        return {
+            query: queries,
+            values: [...finalValues.flat(), ...variablesValues],
+        };
+    }
+
+    const stringValues =
+        'VALUES ' +
+        finalValues
+            .map((v, multiplier) => `(${v.map((_, i) => `$${keys.length * multiplier + (i + 1)}`).join(', ')})`)
+            .join(', ');
+    const query = `INSERT INTO ${schema.name}.${name}(${keys
+        .map(k => `"${k}"`)
+        .join(', ')}) ${stringValues} RETURNING *`;
 
     return {
         query,
-        values: finalValues.flat(),
+        values: [...finalValues.flat(), ...variablesValues],
     };
 }
 
@@ -801,7 +831,7 @@ function makeMutationDelete(schema: Omit<Schema, 'tables'>, table: Table, where:
  */
 type QueryReturn = {
     query: string;
-    values: string[];
+    values: (string | null)[];
     orderByQuery: string | undefined;
     whereQuery: string | undefined;
 };
@@ -846,10 +876,10 @@ function makeQuery(
         throw new Error(`One required variable is missing. Required variables: ${requiredVariables.join(', ')}`);
     }
 
-    const values: string[] = [
-        ...Object.values(variables ?? {})
-            .filter(Boolean)
-            .map(v => String(v)),
+    const values: (string | null)[] = [
+        ...((table.variables
+            ?.map(v => (variables?.[v.name] ?? v.defaultValue ? String(variables?.[v.name] ?? v.defaultValue) : null))
+            .filter(Boolean) as string[]) ?? []),
     ];
 
     if (values.length < (table.variables?.length ?? 0)) {
@@ -868,6 +898,15 @@ function makeQuery(
     };
 
     const orderByQuery = orderBy ? orderBySQL(orderBy) : '';
+
+    // Replace variables in defaultWhere with $1, $2, etc. if no AND or OR is present
+    if (table.defaultWhere && table.variables && !(where?.AND || where?.OR)) {
+        table.variables.forEach((v, i) => {
+            const index = i + 1;
+            table.defaultWhere = table.defaultWhere?.replace(`$${v.name}`, `$${index}`);
+        });
+    }
+
     const whereQuery =
         where?.AND || where?.OR
             ? whereSQL(where, values, table)
@@ -1088,7 +1127,7 @@ const inputTypesGraphQL = (ob: PgToNexusObject[]): (NexusEnumTypeDef<string> | N
         }),
         ...ob
             .filter(o => o.table.operations.length > 0)
-            .flatMap(({ name, table: { name: tableName, columns, cols, variables } }) => {
+            .flatMap(({ name, table: { name: tableName, columns, cols, variables, defaultWhere } }) => {
                 const colsToMap = columns.filter(c =>
                     Array.isArray(cols) && cols.length > 0 ? cols.includes(c.name) : true,
                 );
@@ -1147,13 +1186,16 @@ const inputTypesGraphQL = (ob: PgToNexusObject[]): (NexusEnumTypeDef<string> | N
                             mapTypes(colsToMap, t, 'OrderByASCAndDESC');
                         },
                     }),
-                    variables
+                    variables && variables.length > 0 && defaultWhere && variables.some(v => !v.isHidden)
                         ? inputObjectType({
                               name: toPascalCase('variables_' + pascalCaseToSnakeCase(name)),
                               description: `The variables for the ${toNameCase(tableName.replace(/_/g, ' '))}.`,
                               definition(t) {
                                   variables.forEach(({ name: vName, type: vType, nullable, description }) => {
-                                      (nullable ? t.nullable : t.nonNull).field(vName, { type: vType, description });
+                                      (nullable ? t.nullable : t.nonNull).field(vName, {
+                                          type: toPascalCase(vType),
+                                          description,
+                                      });
                                   });
                               },
                           })
@@ -1392,8 +1434,8 @@ export const generateSchema = async (
                                   columns
                                       .filter(c =>
                                           Array.isArray(cols) && cols.length > 0
-                                              ? !c.nullable || cols.includes(c.name)
-                                              : true,
+                                              ? (!c.nullable || cols.includes(c.name)) && !c.isAutoIncrement
+                                              : !c.isAutoIncrement,
                                       )
                                       .forEach(c => columnInputType(t, c));
                               },
@@ -1471,14 +1513,57 @@ export const generateSchema = async (
                                               ),
                                           ),
                                       ),
+                                      ...(table.variables &&
+                                      table.variables.length > 0 &&
+                                      table.defaultWhere &&
+                                      table.variables.some(v => !v.isHidden)
+                                          ? {
+                                                variables: table.variables.some(v => !v.nullable)
+                                                    ? nonNull(
+                                                          arg({
+                                                              type: toPascalCase(
+                                                                  'variables_' + pascalCaseToSnakeCase(name),
+                                                              ),
+                                                              description: 'Custom variables for the query in database',
+                                                          }),
+                                                      )
+                                                    : arg({
+                                                          type: toPascalCase(
+                                                              'variables_' + pascalCaseToSnakeCase(name),
+                                                          ),
+                                                          description: 'Custom variables for the query in database',
+                                                      }),
+                                            }
+                                          : {}),
                                   },
                                   description: 'Create a new ' + toNameCase(table.name.replace(/_/g, ' ')) + '.',
                                   resolve: async (_root, args) => {
-                                      const { query, values } = makeMutationCreate(s, table, args.values);
-
-                                      const r: QueryResultRow[] = await execQuery(credentials, query, values).then(
-                                          r => r?.rows ?? [],
+                                      const { query, values } = makeMutationCreate(
+                                          s,
+                                          table,
+                                          args.values,
+                                          args.variables,
                                       );
+
+                                      if (Array.isArray(query)) {
+                                          const r = await Promise.all(
+                                              query.map(q =>
+                                                  execQuery(credentials, q, values).then(r => r?.rows ?? []),
+                                              ),
+                                          );
+                                          const finalResult = await linkResultWithForeignsKeys(
+                                              table.columns.filter(
+                                                  c => c.foreignKey.is && c.foreignKey.data != undefined && linkForeign,
+                                              ),
+                                              table,
+                                              r.flat(),
+                                              credentials,
+                                          ).then(r => r.filter(Boolean));
+
+                                          return { rowsAffected: finalResult.length, results: finalResult };
+                                      }
+
+                                      const r = await execQuery(credentials, query, values).then(r => r?.rows ?? []);
 
                                       const fks = table.columns.filter(
                                           c => c.foreignKey.is && c.foreignKey.data != undefined && linkForeign,
@@ -1514,9 +1599,7 @@ export const generateSchema = async (
                                   resolve: async (_root, args) => {
                                       const { query, values } = makeMutationUpdate(s, table, args.value, args.where);
 
-                                      const r: QueryResultRow[] = await execQuery(credentials, query, values).then(
-                                          r => r?.rows ?? [],
-                                      );
+                                      const r = await execQuery(credentials, query, values).then(r => r?.rows ?? []);
 
                                       const fks = table.columns.filter(
                                           c => c.foreignKey.is && c.foreignKey.data != undefined && linkForeign,
@@ -1549,9 +1632,7 @@ export const generateSchema = async (
                                   resolve: async (_root, args) => {
                                       const { query, values } = makeMutationDelete(s, table, args.where);
 
-                                      const r: QueryResultRow[] = await execQuery(credentials, query, values).then(
-                                          r => r?.rows ?? [],
-                                      );
+                                      const r = await execQuery(credentials, query, values).then(r => r?.rows ?? []);
 
                                       const fks = table.columns.filter(
                                           c => c.foreignKey.is && c.foreignKey.data != undefined && linkForeign,
@@ -1596,16 +1677,32 @@ export const generateSchema = async (
                                           type: toPascalCase('where_' + pascalCaseToSnakeCase(name)),
                                           description: 'Where for the query in database',
                                       }),
-                                      variables: table.variables
-                                          ? arg({
-                                                type: toPascalCase('variables_' + name),
-                                                description: 'Custom variables for the query in database',
-                                            })
-                                          : undefined,
                                       orderBy: arg({
                                           type: toPascalCase('order_by_' + pascalCaseToSnakeCase(name)),
                                           description: 'Ordering for the query in database',
                                       }),
+                                      ...(table.variables &&
+                                      table.variables.length > 0 &&
+                                      table.defaultWhere &&
+                                      table.variables.some(v => !v.isHidden)
+                                          ? {
+                                                variables: table.variables.some(v => !v.nullable)
+                                                    ? nonNull(
+                                                          arg({
+                                                              type: toPascalCase(
+                                                                  'variables_' + pascalCaseToSnakeCase(name),
+                                                              ),
+                                                              description: 'Custom variables for the query in database',
+                                                          }),
+                                                      )
+                                                    : arg({
+                                                          type: toPascalCase(
+                                                              'variables_' + pascalCaseToSnakeCase(name),
+                                                          ),
+                                                          description: 'Custom variables for the query in database',
+                                                      }),
+                                            }
+                                          : {}),
                                   },
                                   description:
                                       'Get results for the object ' + toNameCase(table.name.replace(/_/g, ' ')) + '.',
@@ -1621,13 +1718,11 @@ export const generateSchema = async (
                                           numberOfResults,
                                           pageNumber * numberOfResults,
                                           args.where,
-                                          args.variable,
+                                          args.variables,
                                           args.orderBy,
                                       );
 
-                                      const r: QueryResultRow[] = await execQuery(credentials, query, values).then(
-                                          r => r?.rows ?? [],
-                                      );
+                                      const r = await execQuery(credentials, query, values).then(r => r?.rows ?? []);
 
                                       const fks = table.columns.filter(
                                           c => c.foreignKey.is && c.foreignKey.data != undefined && linkForeign,
