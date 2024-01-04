@@ -564,12 +564,12 @@ const operators = {
  * Generates the WHERE clause of an SQL query based on the provided conditions.
  *
  * @param {WhereType} where - The conditions for the WHERE clause.
- * @param {(string | null)[]} values - An array to store the parameter values.
+ * @param {MutationValuesType[]} values - An array to store the parameter values.
  * @param {Table} table - The table object containing column information.
  * @param {number} [startVarIndex] - The starting index for parameter values.
  * @returns {string} The generated WHERE clause.
  */
-const whereSQL = (where: WhereType, values: (string | null)[], table: Table, startVarIndex?: number): string => {
+const whereSQL = (where: WhereType, values: MutationValuesType[], table: Table, startVarIndex?: number): string => {
     type ANDOrOR = {
         col: Column;
         condition: { SINGLE?: SingleCondition; ARRAY?: ArrayCondition };
@@ -581,15 +581,18 @@ const whereSQL = (where: WhereType, values: (string | null)[], table: Table, sta
 
         if (Array.isArray(v)) {
             const initIndex = values.length;
-            const finalIndex = initIndex + v.length;
 
-            v.forEach((vv, i) => {
+            (c.condition == 'BETWEEN' ? v.slice(0, 2) : v).forEach((vv, i) => {
                 values[initIndex + i] = String(vv);
             });
 
-            const finalValues = values.slice(initIndex, finalIndex);
+            if (c.condition == 'BETWEEN') {
+                return `BETWEEN $${initIndex + 1}::${type} AND $${initIndex + 2}::${type}`;
+            }
 
-            return `${operators[condition]} (${finalValues.map((_, i) => '$' + (i + 1)).join(`::${type}, `)}::${type})`;
+            return `${operators[condition]} (${v
+                .map((_, i) => '$' + (initIndex + i + 1))
+                .join(`::${type}, `)}::${type})`;
         } else {
             if (v !== undefined) {
                 values.push(String(v));
@@ -668,7 +671,7 @@ type MutationValuesType = string | number | boolean | null;
  * Represents the return type for mutation Create operations.
  */
 type MutationCreateReturn = {
-    query: string | string[];
+    query: string | { query: string; values: MutationValuesType[] }[];
     values: MutationValuesType[];
 };
 
@@ -678,7 +681,7 @@ type MutationCreateReturn = {
  * @param {Omit<Schema, 'tables'>} schema - The schema object.
  * @param {Table} table - The table object.
  * @param {{ [x: string]: MutationValuesType }[]} [values] - An array of objects representing the record values.
- * @param {{ [x: string]: MutationValuesType }[]} [variables] - Custom variables for the WHERE clause.
+ * @param {{ [x: string]: MutationValuesType }} variables - Custom variables for the WHERE clause.
  * @returns {MutationCreateReturn} The query and values for the mutation operation.
  */
 function makeMutationCreate(
@@ -710,20 +713,22 @@ function makeMutationCreate(
     const finalValues = values.map(v => keys.map(k => v[k] ?? null));
 
     if (table.defaultWhere && vars) {
-        vars.forEach((v, i) => {
-            const index = finalValues.flat().length + i + 1;
-            table.defaultWhere = table.defaultWhere?.replace(`$${v.name}`, `$${index}`);
-        });
-    }
+        const queries: { query: string; values: MutationValuesType[] }[] = [];
+        finalValues.forEach(v => {
+            let defaultWhere = table.defaultWhere;
+            vars.forEach((vv, i) => {
+                const index = v.length + i + 1;
+                defaultWhere = defaultWhere?.replace(`$${vv.name}`, `$${index}`);
+            });
 
-    if (table.defaultWhere && vars) {
-        const queries: string[] = [];
-        finalValues.forEach((v, multiplier) => {
-            const stringValues = `SELECT ${v.map((_, i) => `$${keys.length * multiplier + (i + 1)}`).join(', ')}
-            .join(', ')} WHERE (${table.defaultWhere})`;
-            queries.push(
-                `INSERT INTO ${schema.name}.${name}(${keys.map(k => `"${k}"`).join(', ')}) ${stringValues} RETURNING *`,
-            );
+            const stringValues = `SELECT ${v.map((_, i) => `$${i + 1}`).join(', ')} WHERE (${defaultWhere})`;
+
+            queries.push({
+                query: `INSERT INTO ${schema.name}.${name}(${keys
+                    .map(k => `"${k}"`)
+                    .join(', ')}) ${stringValues} RETURNING *`,
+                values: [...v, ...variablesValues],
+            });
         });
 
         return {
@@ -763,6 +768,7 @@ type MutationUpdateReturn = {
  * @param {Table} table - The table object.
  * @param {{ [x: string]: MutationValuesType }} value - An object representing the updated values.
  * @param {WhereType} where - The conditions for the UPDATE operation.
+ * @param {{ [x: string]: MutationValuesType }} variables - Custom variables for the WHERE clause.
  * @returns {MutationUpdateReturn} The query, where clause, and values for the mutation operation.
  */
 function makeMutationUpdate(
@@ -770,17 +776,32 @@ function makeMutationUpdate(
     table: Table,
     value: { [x: string]: MutationValuesType },
     where: WhereType,
+    variables?: { [x: string]: MutationValuesType },
 ): MutationUpdateReturn {
     const cols = table.cols;
     const keys = Object.keys(value)
         .map(v => ((cols ?? table.columns.map(c => c.name)).includes(v) ? v : null))
         .filter(v => Boolean(v)) as string[];
 
-    const values: MutationValuesType[] = [];
+    const requiredVariables = table.variables?.filter(v => !v.nullable && table.defaultWhere).map(v => v.name) ?? [];
+    if (!Object.keys(variables ?? {}).every(v => requiredVariables.includes(v))) {
+        throw new Error(`One required variable is missing. Required variables: ${requiredVariables.join(', ')}`);
+    }
+
+    const values: MutationValuesType[] = [
+        ...(table.variables?.map(v =>
+            variables?.[v.name] ?? v.defaultValue ? String(variables?.[v.name] ?? v.defaultValue) : null,
+        ) ?? []),
+    ];
+
+    if (values.length < (table.variables?.length ?? 0)) {
+        const diff = (table.variables?.length ?? 0) - values.length;
+        values.push(...Array(diff).fill(null));
+    }
 
     const updateValues = keys.map(k => value[k] ?? null);
 
-    const whereQuery = where.AND || where.OR ? whereSQL(where, values as any, table) : 'WHERE TRUE IS FALSE';
+    const whereQuery = where.AND || where.OR ? whereSQL(where, values, table) : 'WHERE TRUE IS FALSE';
 
     values.push(...updateValues);
 
@@ -810,12 +831,32 @@ type MutationDeleteReturn = {
  * @param {Omit<Schema, 'tables'>} schema - The schema object.
  * @param {Table} table - The table object.
  * @param {WhereType} where - The conditions for the DELETE operation.
+ * @param {{ [x: string]: MutationValuesType }} variables - Custom variables for the WHERE clause.
  * @returns {MutationDeleteReturn} The query, where clause, and values for the mutation operation.
  */
-function makeMutationDelete(schema: Omit<Schema, 'tables'>, table: Table, where: WhereType): MutationDeleteReturn {
-    const values: MutationValuesType[] = [];
+function makeMutationDelete(
+    schema: Omit<Schema, 'tables'>,
+    table: Table,
+    where: WhereType,
+    variables?: { [x: string]: MutationValuesType },
+): MutationDeleteReturn {
+    const requiredVariables = table.variables?.filter(v => !v.nullable && table.defaultWhere).map(v => v.name) ?? [];
+    if (!Object.keys(variables ?? {}).every(v => requiredVariables.includes(v))) {
+        throw new Error(`One required variable is missing. Required variables: ${requiredVariables.join(', ')}`);
+    }
 
-    const whereQuery = where.AND || where.OR ? whereSQL(where, values as any, table) : 'WHERE TRUE IS FALSE';
+    const values: MutationValuesType[] = [
+        ...(table.variables?.map(v =>
+            variables?.[v.name] ?? v.defaultValue ? String(variables?.[v.name] ?? v.defaultValue) : null,
+        ) ?? []),
+    ];
+
+    if (values.length < (table.variables?.length ?? 0)) {
+        const diff = (table.variables?.length ?? 0) - values.length;
+        values.push(...Array(diff).fill(null));
+    }
+
+    const whereQuery = where.AND || where.OR ? whereSQL(where, values, table) : 'WHERE TRUE IS FALSE';
 
     const query = `DELETE FROM ${schema.name}.${table.name} ${whereQuery} RETURNING *`;
 
@@ -1547,8 +1588,8 @@ export const generateSchema = async (
 
                                       if (Array.isArray(query)) {
                                           const r = await Promise.all(
-                                              query.map(q =>
-                                                  execQuery(credentials, q, values).then(r => r?.rows ?? []),
+                                              query.map(({ query, values: v }) =>
+                                                  execQuery(credentials, query, v).then(r => r?.rows ?? []),
                                               ),
                                           );
                                           const finalResult = await linkResultWithForeignsKeys(
@@ -1594,10 +1635,38 @@ export const generateSchema = async (
                                               description: 'Where for the update in database',
                                           }),
                                       ),
+                                      ...(table.variables &&
+                                      table.variables.length > 0 &&
+                                      table.defaultWhere &&
+                                      table.variables.some(v => !v.isHidden)
+                                          ? {
+                                                variables: table.variables.some(v => !v.nullable)
+                                                    ? nonNull(
+                                                          arg({
+                                                              type: toPascalCase(
+                                                                  'variables_' + pascalCaseToSnakeCase(name),
+                                                              ),
+                                                              description: 'Custom variables for the query in database',
+                                                          }),
+                                                      )
+                                                    : arg({
+                                                          type: toPascalCase(
+                                                              'variables_' + pascalCaseToSnakeCase(name),
+                                                          ),
+                                                          description: 'Custom variables for the query in database',
+                                                      }),
+                                            }
+                                          : {}),
                                   },
                                   description: 'Update a existing ' + toNameCase(table.name.replace(/_/g, ' ')) + '.',
                                   resolve: async (_root, args) => {
-                                      const { query, values } = makeMutationUpdate(s, table, args.value, args.where);
+                                      const { query, values } = makeMutationUpdate(
+                                          s,
+                                          table,
+                                          args.value,
+                                          args.where,
+                                          args.variables,
+                                      );
 
                                       const r = await execQuery(credentials, query, values).then(r => r?.rows ?? []);
 
@@ -1627,10 +1696,37 @@ export const generateSchema = async (
                                               description: 'Where for the delete in database',
                                           }),
                                       ),
+                                      ...(table.variables &&
+                                      table.variables.length > 0 &&
+                                      table.defaultWhere &&
+                                      table.variables.some(v => !v.isHidden)
+                                          ? {
+                                                variables: table.variables.some(v => !v.nullable)
+                                                    ? nonNull(
+                                                          arg({
+                                                              type: toPascalCase(
+                                                                  'variables_' + pascalCaseToSnakeCase(name),
+                                                              ),
+                                                              description: 'Custom variables for the query in database',
+                                                          }),
+                                                      )
+                                                    : arg({
+                                                          type: toPascalCase(
+                                                              'variables_' + pascalCaseToSnakeCase(name),
+                                                          ),
+                                                          description: 'Custom variables for the query in database',
+                                                      }),
+                                            }
+                                          : {}),
                                   },
                                   description: 'Delete a existing ' + toNameCase(table.name.replace(/_/g, ' ')) + '.',
                                   resolve: async (_root, args) => {
-                                      const { query, values } = makeMutationDelete(s, table, args.where);
+                                      const { query, values } = makeMutationDelete(
+                                          s,
+                                          table,
+                                          args.where,
+                                          args.variables,
+                                      );
 
                                       const r = await execQuery(credentials, query, values).then(r => r?.rows ?? []);
 
